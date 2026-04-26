@@ -1,0 +1,17 @@
+# Môi trường ảo
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Các file dữ liệu và kết quả
+backend/results/
+*.keras
+*.h5
+
+# Các file ảnh tạm thời
+*.png
+*.jpg
