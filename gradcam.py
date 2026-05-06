@@ -1,52 +1,69 @@
 import tensorflow as tf
 import numpy as np
-import cv2
+from tensorflow.keras.applications.resnet50 import preprocess_input
+
+IMG_SIZE = (224, 224)
+
+# ===== PREPROCESS =====
+def preprocess_image(path):
+    # Sử dụng tf.keras.utils thay cho thư viện preprocessing cũ
+    img = tf.keras.utils.load_img(path, target_size=IMG_SIZE)
+    img = tf.keras.utils.img_to_array(img)
+
+    img = np.expand_dims(img, axis=0)
+    img = img.astype(np.float32)
+
+    img = preprocess_input(img)
+    return img
 
 
-def make_gradcam_heatmap(img_array, model, last_conv_layer_name="conv5_block3_out"):
-
-    grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[
-            model.get_layer(last_conv_layer_name).output,
-            model.output
-        ]
+# ===== BUILD GRAD MODEL =====
+def build_grad_model(model, last_conv_layer_name):
+    # Tách mô hình để lấy output của layer conv cuối và output dự đoán
+    return tf.keras.models.Model(
+        inputs=model.input,
+        outputs=[model.get_layer(last_conv_layer_name).output, model.output]
     )
 
-    with tf.GradientTape() as tape:
-        conv_outputs, preds = grad_model(img_array)
 
-        # nếu preds là list thì lấy phần tử đầu
+# ===== GRAD-CAM++ =====
+def gradcam_plus_plus(grad_model, img_array):
+    with tf.GradientTape() as tape:
+        conv_output, preds = grad_model(img_array)
+
+        # Xử lý nếu output trả về là dạng list
         if isinstance(preds, list):
             preds = preds[0]
 
-        pred_index = tf.argmax(preds[0])
-        class_channel = preds[:, pred_index]
+        preds = tf.convert_to_tensor(preds)
 
-    grads = tape.gradient(class_channel, conv_outputs)
+        class_idx = tf.argmax(preds[0])
+        class_channel = preds[:, class_idx]
 
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    grads = tape.gradient(class_channel, conv_output)
 
-    conv_outputs = conv_outputs[0]
+    conv_output = conv_output[0]
+    grads = grads[0]
 
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
+    # ===== Tính toán theo công thức Grad-CAM++ =====
+    grads_2 = grads ** 2
+    grads_3 = grads ** 3
 
-    heatmap = tf.maximum(heatmap, 0)
-    heatmap /= tf.reduce_max(heatmap)
+    sum_activations = tf.reduce_sum(conv_output, axis=(0, 1))
 
-    return heatmap.numpy()
+    eps = 1e-8
+    alpha = grads_2 / (2 * grads_2 + sum_activations * grads_3 + eps)
 
+    weights = tf.reduce_sum(alpha * tf.nn.relu(grads), axis=(0, 1))
 
-def save_gradcam(img_path, heatmap, output_path):
-    img = cv2.imread(img_path)
-    img = cv2.resize(img, (224, 224))
+    heatmap = tf.reduce_sum(weights * conv_output, axis=-1)
+    heatmap = tf.nn.relu(heatmap)
 
-    heatmap = cv2.resize(heatmap, (224, 224))
-    heatmap = np.uint8(255 * heatmap)
+    heatmap = heatmap.numpy()
 
-    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    # Chuẩn hóa heatmap về khoảng [0, 1]
+    if np.max(heatmap) != 0:
+        heatmap /= np.max(heatmap)
 
-    superimposed = cv2.addWeighted(img, 0.6, heatmap, 0.4, 0)
-
-    cv2.imwrite(output_path, superimposed)
+    # Trả về heatmap, index phân lớp và raw_preds để API tính độ tin cậy
+    return heatmap, int(class_idx), preds[0].numpy()
