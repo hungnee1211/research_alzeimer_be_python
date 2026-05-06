@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-tensorflow
-numpy
+tensorflow==2.15.0
+numpy<2.0.0
 opencv-python-headless
 python-multipart
